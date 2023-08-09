@@ -1,0 +1,7 @@
+---
+- name: Run role on master nodes
+  hosts: master
+  become: true
+  gather_facts: true
+  roles:
+    - k8s-master

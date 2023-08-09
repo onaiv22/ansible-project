@@ -1,0 +1,154 @@
+---
+- name: Display SSH-related variables
+  debug:
+    var: ansible_user_id
+
+- name: Display ansible_user_gid
+  debug:
+    var:  ansible_user_gid
+
+- name: display
+  debug:
+    var: ansible_env.HOME     
+
+
+
+- name: Apt update
+  apt:
+    update_cache: yes
+
+- name: Install a list of packages
+  apt:
+    pkg:
+    - apt-transport-https 
+    - ca-certificates 
+    - curl 
+    - software-properties-common 
+    - containerd  
+  register: package_install_result  
+
+- name: Download GPG Key for Google Cloud APT Repository   
+  shell: curl -s https://packages.cloud.google.com/apt/doc/apt-key.gpg
+  register: gpg_key_output
+  changed_when: false
+
+- name: Add GPG key to APT Keyring
+  apt_key:
+    data: "{{ gpg_key_output.stdout }}"
+    state: present
+  when: gpg_key_output.stdout is defined  
+
+- name: Add k8s APT repository
+  apt_repository:
+    repo: "deb http://apt.kubernetes.io/ kubernetes-xenial main"
+    state: present
+  notify:
+    - Update APT cache
+
+- name: Install kubeadm kubelet and kubectl
+  apt:
+    pkg:
+    - kubeadm
+    - kubectl
+    - kubelet   
+
+- name: Prevent kubeadm kubelet and kubectl from been upgraded
+  ansible.builtin.dpkg_selections:
+    name: "{{ item }}"
+    selection: hold
+  loop:
+    - kubeadm
+    - kubectl
+    - kubelet
+  when: package_install_result is succeeded  
+
+# https://germaniumhq.com/2019/02/14/2019-02-14-Disabling-Swap-for-Kubernetes-in-an-Ansible-Playbook/
+- name: Disable Swapp Spaces since k8s cant work with swap enabled
+  shell: |
+    swapoff -a
+  when: package_install_result is succeeded 
+
+- name: Disable SWAP in fstab since kubernetes can't work with swap enabled (2/2)
+  replace:
+    path: /etc/fstab
+    regexp: '^([^#].*?\sswap\s+sw\s+.*)$'
+    replace: '# \1'
+    backup: yes
+  when: package_install_result is succeeded   
+
+- name: Enable IP Forwarding
+  lineinfile:
+    backup: true
+    state: present
+    create: yes
+    insertafter: '^#net.ipv4.ip_forward=1'
+    line: net.ipv4.ip_forward=1
+    path: /etc/sysctl.conf
+  notify:
+    - Apply sysctl changes   
+
+- name: Enable Bridge Netfilter for iptables
+  become: true
+  shell: |
+    sudo modprobe br_netfilter
+    echo "br_netfilter" | sudo tee -a /etc/modules
+    echo "net.bridge.bridge-nf-call-iptables = 1" | sudo tee /etc/sysctl.d/k8s.conf
+    sudo sysctl --system
+
+- name: Create directory for join token log
+  become: true
+  file:
+    path: /tmp/token/
+    state: directory
+
+
+- name: Initialize Kubernetes on the Master Node and capture the join token
+  become: true
+  shell: |
+    join_token=$(sudo kubeadm init --pod-network-cidr=10.244.0.0/16 --apiserver-advertise-address=10.10.45.10 | grep "kubeadm join")
+    echo "$join_token" >> /tmp/token/join_token.log
+  register: kubeadm_init_result
+  changed_when: "'kubeadm join' in kubeadm_init_result.stdout"
+  when: not ('/tmp/token/join_token.log' is exists)
+
+- name: Show the captured join token
+  debug:
+    msg: "{{ kubeadm_init_result.stdout }}"
+
+
+- name: Create the .kube directory
+  become: yes
+  file:
+    path: "{{ ansible_env.HOME }}/.kube"
+    state: directory
+    owner: "{{ ansible_env.USER }}"
+    group: "{{ ansible_env.USER }}"
+    mode: '0755'
+
+- name: Copy admin.conf to .kube directory
+  become: yes
+  copy:
+    remote_src: yes
+    src: /etc/kubernetes/admin.conf
+    dest: "{{ ansible_env.HOME }}/.kube/config"
+    owner: "{{ ansible_env.USER }}"
+    group: "{{ ansible_env.USER }}"
+    mode: '0644'
+
+
+- name: Change ownership of .kube/config
+  become: yes
+  file:
+    path: "{{ ansible_env.HOME }}/.kube/config"
+    owner: "{{ ansible_env.USER }}"
+    group: "{{ ansible_env.USER }}"
+
+- name: Install Calico CNI Plugin
+  shell: kubectl apply -f https://docs.projectcalico.org/manifests/calico.yaml
+
+
+
+
+
+
+      
