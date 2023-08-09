@@ -1,18 +1,4 @@
 ---
-- name: Display SSH-related variables
-  debug:
-    var: ansible_user_id
-
-- name: Display ansible_user_gid
-  debug:
-    var:  ansible_user_gid
-
-- name: display
-  debug:
-    var: ansible_env.HOME     
-
-
-
 - name: Apt update
   apt:
     update_cache: yes
